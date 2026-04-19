@@ -63,6 +63,17 @@ class Logger:
     def summary(self, msg: str) -> None:
         print(self._paint("[DONE]", Colors.BOLD), msg)
 
+    def progress(self, msg: str) -> None:
+        line = self._paint("[....]", Colors.DIM) + f" {msg}"
+        if sys.stdout.isatty():
+            print(f"\r{line}", end="", flush=True)
+        else:
+            print(line)
+
+    def progress_done(self) -> None:
+        if sys.stdout.isatty():
+            print()
+
 
 def parse_ports(ports_raw: str) -> List[int]:
     ports: list[int] = []
@@ -214,12 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "-t",
         "--targets",
         nargs="+",
         default=[],
         help="Targets separated by comma and/or spaces. Supports domains, IPs, and subnets (CIDR).",
     )
     parser.add_argument(
+        "-f",
         "--target-list-file",
         "--target-file",
         dest="target_list_file",
@@ -229,23 +242,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "-p",
         "--ports",
         required=True,
         help="Port list, e.g. 443 or 80,443 or 1-1024",
     )
     parser.add_argument(
+        "-T",
         "--timeout-ms",
         type=int,
         default=2000,
         help="TCP connection timeout in milliseconds (default: 2000)",
     )
     parser.add_argument(
+        "-r",
         "--retries",
         type=int,
         default=0,
         help="Retry attempts per target/port after the first failed attempt (default: 0).",
     )
     parser.add_argument(
+        "-w",
         "--workers",
         type=int,
         default=0,
@@ -255,15 +272,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "-o",
         "--save-success",
         help="Output file for successful results (.txt, .json, .csv).",
     )
     parser.add_argument(
+        "-R",
         "--random-order",
         action="store_true",
         help="Run checks in random order. Default is deterministic input order.",
     )
     parser.add_argument(
+        "-C",
         "--no-color",
         action="store_true",
         help="Disable colored logs.",
@@ -296,12 +316,13 @@ def run_scan(
     random_order: bool,
     logger: Logger,
 ) -> list[ScanResult]:
-    indexed_checks = [
-        (target, port, index) for index, (target, port) in enumerate((t, p) for t in targets for p in ports)
-    ]
+    indexed_checks = [(target, port) for target in targets for port in ports]
     if random_order:
         random.shuffle(indexed_checks)
-    results_by_index: dict[int, ScanResult] = {}
+    total_checks = len(indexed_checks)
+    results: list[ScanResult] = []
+    start_time = time.perf_counter()
+    spinner_chars = ["◐", "◓", "◑", "◒"]
 
     def run_one(target: str, port: int) -> ScanResult:
         timeout_seconds = timeout_ms / 1000.0
@@ -336,17 +357,26 @@ def run_scan(
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map: dict[Future[ScanResult], int] = {
-            executor.submit(run_one, target, port): index for target, port, index in indexed_checks
+        future_map: dict[Future[ScanResult], tuple[str, int]] = {
+            executor.submit(run_one, target, port): (target, port) for target, port in indexed_checks
         }
+        done_count = 0
         for future in as_completed(future_map):
-            index = future_map[future]
             row = future.result()
-            results_by_index[index] = row
-    ordered_results = [results_by_index[i] for i in range(len(indexed_checks))]
-    for row in ordered_results:
-        print_result(row, logger)
-    return ordered_results
+            done_count += 1
+            results.append(row)
+            print_result(row, logger)
+
+            elapsed = max(0.001, time.perf_counter() - start_time)
+            rate = done_count / elapsed
+            remaining = total_checks - done_count
+            eta_seconds = int(remaining / rate) if rate > 0 else 0
+            spinner = spinner_chars[done_count % len(spinner_chars)]
+            logger.progress(
+                f"{spinner} {done_count}/{total_checks} done | eta ~{eta_seconds}s"
+            )
+    logger.progress_done()
+    return results
 
 
 def main(argv: Sequence[str] | None = None) -> int:
