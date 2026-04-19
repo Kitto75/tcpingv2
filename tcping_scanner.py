@@ -7,6 +7,7 @@ import argparse
 import csv
 import ipaddress
 import json
+import random
 import socket
 import sys
 import time
@@ -258,6 +259,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file for successful results (.txt, .json, .csv).",
     )
     parser.add_argument(
+        "--random-order",
+        action="store_true",
+        help="Run checks in random order. Default is deterministic input order.",
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored logs.",
@@ -287,11 +293,14 @@ def run_scan(
     timeout_ms: int,
     retries: int,
     workers: int,
+    random_order: bool,
     logger: Logger,
 ) -> list[ScanResult]:
     indexed_checks = [
         (target, port, index) for index, (target, port) in enumerate((t, p) for t in targets for p in ports)
     ]
+    if random_order:
+        random.shuffle(indexed_checks)
     results_by_index: dict[int, ScanResult] = {}
 
     def run_one(target: str, port: int) -> ScanResult:
@@ -334,9 +343,10 @@ def run_scan(
             index = future_map[future]
             row = future.result()
             results_by_index[index] = row
-            print_result(row, logger)
-
-    return [results_by_index[i] for i in range(len(indexed_checks))]
+    ordered_results = [results_by_index[i] for i in range(len(indexed_checks))]
+    for row in ordered_results:
+        print_result(row, logger)
+    return ordered_results
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -368,7 +378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info(
         "Starting TCPing scan: "
         f"{len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout_ms}ms, "
-        f"retries={args.retries}, workers={workers}"
+        f"retries={args.retries}, workers={workers}, random_order={args.random_order}"
     )
 
     results = run_scan(
@@ -377,6 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_ms=args.timeout_ms,
         retries=args.retries,
         workers=workers,
+        random_order=args.random_order,
         logger=logger,
     )
 

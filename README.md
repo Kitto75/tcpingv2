@@ -1,107 +1,62 @@
 # tcpingv2
 
-A simple TCPing scanner inspired by the **TCPing test in v2rayNG**.
+Simple TCP connect latency scanner inspired by the TCPing experience in v2rayNG.
 
-It checks pure TCP connect latency (no HTTP/ICMP), and supports:
-- custom IPs
-- domains
-- CIDR subnets
-- customizable timeout in milliseconds
-- retry attempts on failures
-- saving **successful** results only
-- clean, useful logs with optional color output
+It measures **TCP connect time only** (not ICMP ping, not HTTP response time).
 
-## Features
+## Quick start (simplest ways)
 
-- **TCP-only test**: Measures TCP connect success and latency (`ms`).
-- **Flexible targets**:
-  - Direct list (`--targets`)
-  - File input (`--target-list-file`) for CIDR/domain/IP lists
-  - Subnet expansion (`192.168.1.0/24`)
-  - Built-in defaults if no target is provided: `google.com`, `cloudflare.com`
-- **Multi-port scan**:
-  - Single port: `443`
-  - Comma list: `80,443,8443`
-  - Range: `1-1024`
-- **Configurable timeout in milliseconds** with `--timeout-ms`.
-- **Retry support** with `--retries`.
-- **High-speed concurrent testing** (auto worker tuning, configurable with `--workers`).
-- **Colored log output** (auto-enabled on TTY; disable with `--no-color`).
-- **Save successful results** only to:
-  - `.txt`
-  - `.json`
-  - `.csv`
-
----
-
-## Requirements
-
-- Python 3.9+
-- No external dependencies
-
----
-
-## Usage
-
-```bash
-python tcping_scanner.py --ports 443 --targets google.com 1.1.1.1 8.8.8.0/30
-```
-
-### Basic examples
-
-Test domains and IPs on port 443:
-
-```bash
-python tcping_scanner.py --targets google.com cloudflare.com 1.1.1.1 --ports 443
-```
-
-Test mixed targets and ports with custom timeout (ms):
-
-```bash
-python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 80,443 --timeout-ms 1500
-```
-
-Run a very fast burst test (similar to v2rayNG behavior) by increasing worker count:
-
-```bash
-python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --timeout-ms 1000 --workers 150
-```
-
-Use a clearly named target list file (for CIDR/domains/IPs):
-
-```bash
-python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --timeout-ms 2000
-```
-
-Save only successful results:
-
-```bash
-python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --save-success success.json
-```
-
-Use default test targets (if you don't pass `--targets` or `--target-list-file`):
+Run with built-in defaults:
 
 ```bash
 python tcping_scanner.py --ports 443
 ```
 
-Retry failed checks (2 retries after first failure):
+Run explicit targets:
 
 ```bash
-python tcping_scanner.py --targets google.com cloudflare.com --ports 443 --retries 2 --timeout-ms 1200
+python tcping_scanner.py --targets google.com cloudflare.com 1.1.1.1 --ports 443
 ```
 
-Disable colors:
+Run from a target file:
 
 ```bash
-python tcping_scanner.py --targets google.com --ports 443 --no-color
+python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443
 ```
 
----
+## What it supports
+
+- Domains, IPs, and CIDR subnets.
+- Port input as single (`443`), list (`80,443`), or range (`1-1024`).
+- Timeout in milliseconds (`--timeout-ms`).
+- Retries (`--retries`).
+- Concurrent workers (`--workers`).
+- Save successful results only (`--save-success`) to `.txt`, `.json`, `.csv`.
+- Optional random test order (`--random-order`).
+
+## Ordered by default (not random)
+
+Default behavior is deterministic and follows your input order.
+
+- If you want random execution order, add:
+
+```bash
+python tcping_scanner.py --targets google.com cloudflare.com --ports 443 --random-order
+```
+
+## v2rayNG-style inner test sample addresses
+
+If you want sample connectivity test URLs often used in proxy apps (including v2ray ecosystem testing), these are common examples:
+
+- `http://www.gstatic.com/generate_204`
+- `https://www.gstatic.com/generate_204`
+- `http://connectivitycheck.gstatic.com/generate_204`
+
+> Note: this tool is TCP-only, so it tests host:port connectivity (for example `www.gstatic.com:80` or `www.gstatic.com:443`), not URL path response content.
 
 ## Target file format (`cidr_or_domains_targets.txt`)
 
-One target per line. Empty lines and comments are ignored.
+One target per line. Empty lines and lines starting with `#` are ignored.
 
 ```txt
 # Domains
@@ -112,78 +67,44 @@ cloudflare.com
 1.1.1.1
 8.8.8.8
 
-# Subnet (CIDR)
+# CIDR
 192.168.1.0/30
 ```
 
-Suggested clear file naming:
-- `cidr_or_domains_targets.txt` → for your CIDR/domain/IP list used by `--target-list-file`.
-- (Optional) keep a separate notes file like `default_test_domains.txt` for quick copy/paste into `--targets`.
+## Useful examples
 
----
+Custom timeout and retries:
 
-## Output behavior
-
-During scan, each check prints a line showing:
-- input target
-- tested endpoint (`host:port`)
-- `latency` if success
-- `error` if failed
-
-Checks are executed concurrently, so results appear quickly as each worker completes.
-
-At the end, it prints summary with:
-- total checks
-- success/failed count
-- min/avg/max latency (if at least one success)
-
-Exit codes:
-- `0`: at least one successful TCP connection
-- `1`: scan finished but no successful connection
-- `2`: invalid arguments/input errors
-
----
-
-## Save-success output formats
-
-### TXT (`.txt`)
-Human-readable lines:
-
-```txt
-google.com (google.com):443 18.42 ms @ 2026-04-19T10:00:00+00:00
+```bash
+python tcping_scanner.py --targets google.com 1.1.1.1 --ports 443 --timeout-ms 1200 --retries 2
 ```
 
-### JSON (`.json`)
-Array of successful result objects.
+Multiple ports:
 
-### CSV (`.csv`)
-Columns:
-- `input_target`
-- `resolved_host`
-- `port`
-- `success`
-- `latency_ms`
-- `timestamp_utc`
+```bash
+python tcping_scanner.py --targets google.com --ports 80,443,8443
+```
 
----
+Save successes:
 
-## Complete command help
+```bash
+python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --save-success success.json
+```
 
-Run:
+Disable colored output:
+
+```bash
+python tcping_scanner.py --targets google.com --ports 443 --no-color
+```
+
+## Exit codes
+
+- `0`: at least one successful TCP connection.
+- `1`: scan finished but no successful connections.
+- `2`: invalid arguments/input errors.
+
+## Help
 
 ```bash
 python tcping_scanner.py --help
 ```
-
-You will see:
-- all flags
-- examples
-- accepted formats for targets and ports
-
----
-
-## Notes
-
-- This is a **TCP connect test** (like tcping), not ICMP ping.
-- Domain resolution is handled by the system resolver used by Python sockets.
-- Large subnets can create many checks; start with smaller CIDRs first.
