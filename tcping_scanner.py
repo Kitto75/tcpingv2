@@ -315,7 +315,7 @@ def run_scan(
     workers: int,
     random_order: bool,
     logger: Logger,
-) -> list[ScanResult]:
+) -> tuple[list[ScanResult], bool]:
     indexed_checks = [(target, port) for target in targets for port in ports]
     if random_order:
         random.shuffle(indexed_checks)
@@ -356,27 +356,46 @@ def run_scan(
             timestamp_utc=last_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
+    interrupted = False
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map: dict[Future[ScanResult], tuple[str, int]] = {
             executor.submit(run_one, target, port): (target, port) for target, port in indexed_checks
         }
         done_count = 0
-        for future in as_completed(future_map):
-            row = future.result()
-            done_count += 1
-            results.append(row)
-            print_result(row, logger)
+        processed_futures: set[Future[ScanResult]] = set()
+        try:
+            for future in as_completed(future_map):
+                row = future.result()
+                done_count += 1
+                results.append(row)
+                processed_futures.add(future)
+                print_result(row, logger)
 
-            elapsed = max(0.001, time.perf_counter() - start_time)
-            rate = done_count / elapsed
-            remaining = total_checks - done_count
-            eta_seconds = int(remaining / rate) if rate > 0 else 0
-            spinner = spinner_chars[done_count % len(spinner_chars)]
-            logger.progress(
-                f"{spinner} {done_count}/{total_checks} done | eta ~{eta_seconds}s"
-            )
-    logger.progress_done()
-    return results
+                elapsed = max(0.001, time.perf_counter() - start_time)
+                rate = done_count / elapsed
+                remaining = total_checks - done_count
+                eta_seconds = int(remaining / rate) if rate > 0 else 0
+                spinner = spinner_chars[done_count % len(spinner_chars)]
+                logger.progress(
+                    f"{spinner} {done_count}/{total_checks} done | eta ~{eta_seconds}s"
+                )
+        except KeyboardInterrupt:
+            interrupted = True
+            logger.warn("Interrupted by Ctrl+C. Finishing in-flight checks and preparing partial results...")
+            for future in future_map:
+                if not future.done():
+                    future.cancel()
+            for future in future_map:
+                if future in processed_futures or not future.done() or future.cancelled():
+                    continue
+                try:
+                    row = future.result()
+                except Exception:
+                    continue
+                results.append(row)
+        finally:
+            logger.progress_done()
+    return results, interrupted
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -411,7 +430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"retries={args.retries}, workers={workers}, random_order={args.random_order}"
     )
 
-    results = run_scan(
+    results, interrupted = run_scan(
         targets=targets,
         ports=ports,
         timeout_ms=args.timeout_ms,
@@ -422,6 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     total = len(results)
+    planned_total = total_checks
     success_count = sum(1 for r in results if r.success)
     fail_count = total - success_count
 
@@ -430,15 +450,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_ms = min(latencies)
         avg_ms = sum(latencies) / len(latencies)
         max_ms = max(latencies)
-        logger.summary(
-            f"Total={total}  Success={success_count}  Failed={fail_count}  Latency(ms): min={min_ms:.2f} avg={avg_ms:.2f} max={max_ms:.2f}"
-        )
+        summary_prefix = "Partial results" if interrupted else "Total"
+        if interrupted:
+            logger.summary(
+                f"{summary_prefix}={total}/{planned_total}  Success={success_count}  Failed={fail_count}  Latency(ms): min={min_ms:.2f} avg={avg_ms:.2f} max={max_ms:.2f}"
+            )
+        else:
+            logger.summary(
+                f"{summary_prefix}={total}  Success={success_count}  Failed={fail_count}  Latency(ms): min={min_ms:.2f} avg={avg_ms:.2f} max={max_ms:.2f}"
+            )
     else:
-        logger.summary(f"Total={total}  Success={success_count}  Failed={fail_count}")
+        summary_prefix = "Partial results" if interrupted else "Total"
+        if interrupted:
+            logger.summary(f"{summary_prefix}={total}/{planned_total}  Success={success_count}  Failed={fail_count}")
+        else:
+            logger.summary(f"{summary_prefix}={total}  Success={success_count}  Failed={fail_count}")
 
     if args.save_success:
         save_successful(results, args.save_success, logger)
 
+    if interrupted:
+        return 130 if success_count == 0 else 0
     return 0 if success_count > 0 else 1
 
 
