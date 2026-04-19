@@ -75,6 +75,12 @@ CIDR:
 python tcping_scanner.py -t 192.168.1.0/30 -p 443
 ```
 
+High concurrency (recommended for big scans):
+
+```bash
+python tcping_scanner.py -t 192.168.1.0/30 -p 443 -w 1000
+```
+
 Save successes:
 
 ```bash
