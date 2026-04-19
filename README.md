@@ -6,7 +6,8 @@ It checks pure TCP connect latency (no HTTP/ICMP), and supports:
 - custom IPs
 - domains
 - CIDR subnets
-- customizable timeout
+- customizable timeout in milliseconds
+- retry attempts on failures
 - saving **successful** results only
 - clean, useful logs with optional color output
 
@@ -15,13 +16,15 @@ It checks pure TCP connect latency (no HTTP/ICMP), and supports:
 - **TCP-only test**: Measures TCP connect success and latency (`ms`).
 - **Flexible targets**:
   - Direct list (`--targets`)
-  - File input (`--target-file`)
+  - File input (`--target-list-file`) for CIDR/domain/IP lists
   - Subnet expansion (`192.168.1.0/24`)
+  - Built-in defaults if no target is provided: `google.com`, `cloudflare.com`
 - **Multi-port scan**:
   - Single port: `443`
   - Comma list: `80,443,8443`
   - Range: `1-1024`
-- **Configurable timeout** with `--timeout`.
+- **Configurable timeout in milliseconds** with `--timeout-ms`.
+- **Retry support** with `--retries`.
 - **High-speed concurrent testing** (auto worker tuning, configurable with `--workers`).
 - **Colored log output** (auto-enabled on TTY; disable with `--no-color`).
 - **Save successful results** only to:
@@ -52,28 +55,40 @@ Test domains and IPs on port 443:
 python tcping_scanner.py --targets google.com cloudflare.com 1.1.1.1 --ports 443
 ```
 
-Test mixed targets and ports with custom timeout:
+Test mixed targets and ports with custom timeout (ms):
 
 ```bash
-python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 80,443 --timeout 1.5
+python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 80,443 --timeout-ms 1500
 ```
 
 Run a very fast burst test (similar to v2rayNG behavior) by increasing worker count:
 
 ```bash
-python tcping_scanner.py --target-file targets.txt --ports 443 --timeout 1 --workers 150
+python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --timeout-ms 1000 --workers 150
 ```
 
-Use a target file:
+Use a clearly named target list file (for CIDR/domains/IPs):
 
 ```bash
-python tcping_scanner.py --target-file targets.txt --ports 443 --timeout 2
+python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --timeout-ms 2000
 ```
 
 Save only successful results:
 
 ```bash
-python tcping_scanner.py --target-file targets.txt --ports 443 --save-success success.json
+python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --save-success success.json
+```
+
+Use default test targets (if you don't pass `--targets` or `--target-list-file`):
+
+```bash
+python tcping_scanner.py --ports 443
+```
+
+Retry failed checks (2 retries after first failure):
+
+```bash
+python tcping_scanner.py --targets google.com cloudflare.com --ports 443 --retries 2 --timeout-ms 1200
 ```
 
 Disable colors:
@@ -84,7 +99,7 @@ python tcping_scanner.py --targets google.com --ports 443 --no-color
 
 ---
 
-## Target file format (`targets.txt`)
+## Target file format (`cidr_or_domains_targets.txt`)
 
 One target per line. Empty lines and comments are ignored.
 
@@ -100,6 +115,10 @@ cloudflare.com
 # Subnet (CIDR)
 192.168.1.0/30
 ```
+
+Suggested clear file naming:
+- `cidr_or_domains_targets.txt` → for your CIDR/domain/IP list used by `--target-list-file`.
+- (Optional) keep a separate notes file like `default_test_domains.txt` for quick copy/paste into `--targets`.
 
 ---
 

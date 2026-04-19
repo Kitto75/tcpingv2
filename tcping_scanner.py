@@ -91,21 +91,31 @@ def parse_ports(ports_raw: str) -> List[int]:
     return unique
 
 
-def parse_targets(raw_targets: Sequence[str], target_file: str | None, logger: Logger) -> List[str]:
+DEFAULT_TEST_TARGETS = ["google.com", "cloudflare.com"]
+
+
+def parse_targets(raw_targets: Sequence[str], target_list_file: str | None, logger: Logger) -> List[str]:
     targets: list[str] = []
 
     for raw in raw_targets:
         targets.extend(item.strip() for item in raw.split(",") if item.strip())
 
-    if target_file:
-        file_path = Path(target_file)
+    if target_list_file:
+        file_path = Path(target_list_file)
         if not file_path.exists():
-            raise FileNotFoundError(f"Target file does not exist: {target_file}")
+            raise FileNotFoundError(f"Target list file does not exist: {target_list_file}")
         for line in file_path.read_text(encoding="utf-8").splitlines():
             item = line.strip()
             if not item or item.startswith("#"):
                 continue
             targets.append(item)
+
+    if not targets:
+        logger.info(
+            "No targets provided, using default test targets: "
+            + ", ".join(DEFAULT_TEST_TARGETS)
+        )
+        targets.extend(DEFAULT_TEST_TARGETS)
 
     expanded: list[str] = []
     for target in targets:
@@ -133,11 +143,11 @@ def parse_targets(raw_targets: Sequence[str], target_file: str | None, logger: L
     return deduped
 
 
-def tcping(host: str, port: int, timeout: float) -> tuple[bool, float | None, str | None, str]:
+def tcping(host: str, port: int, timeout_seconds: float) -> tuple[bool, float | None, str | None, str]:
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     started = time.perf_counter()
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((host, port), timeout=timeout_seconds):
             elapsed_ms = (time.perf_counter() - started) * 1000
             return True, elapsed_ms, None, timestamp
     except OSError as exc:
@@ -196,8 +206,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Examples:\n"
-            "  python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 443,80 --timeout 2\n"
-            "  python tcping_scanner.py --target-file targets.txt --ports 443 --save-success successes.json"
+            "  python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 443,80 --timeout-ms 2000\n"
+            "  python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --save-success successes.json\n"
+            "  python tcping_scanner.py --ports 443  # Uses default test targets (google.com, cloudflare.com)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -208,8 +219,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Targets separated by comma and/or spaces. Supports domains, IPs, and subnets (CIDR).",
     )
     parser.add_argument(
+        "--target-list-file",
         "--target-file",
-        help="Optional file with one target per line (# for comments).",
+        dest="target_list_file",
+        help=(
+            "Optional file with one target per line (# for comments). "
+            "Use this for CIDR, domain, or IP target lists."
+        ),
     )
     parser.add_argument(
         "--ports",
@@ -217,10 +233,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Port list, e.g. 443 or 80,443 or 1-1024",
     )
     parser.add_argument(
-        "--timeout",
-        type=float,
-        default=2.0,
-        help="TCP connection timeout in seconds (default: 2.0)",
+        "--timeout-ms",
+        type=int,
+        default=2000,
+        help="TCP connection timeout in milliseconds (default: 2000)",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=0,
+        help="Retry attempts per target/port after the first failed attempt (default: 0).",
     )
     parser.add_argument(
         "--workers",
@@ -262,7 +284,8 @@ def choose_workers(total_checks: int, requested_workers: int) -> int:
 def run_scan(
     targets: Sequence[str],
     ports: Sequence[int],
-    timeout: float,
+    timeout_ms: int,
+    retries: int,
     workers: int,
     logger: Logger,
 ) -> list[ScanResult]:
@@ -272,15 +295,35 @@ def run_scan(
     results_by_index: dict[int, ScanResult] = {}
 
     def run_one(target: str, port: int) -> ScanResult:
-        success, latency_ms, error, timestamp = tcping(target, port, timeout)
+        timeout_seconds = timeout_ms / 1000.0
+        last_error: str | None = None
+        last_timestamp: str | None = None
+
+        for attempt in range(retries + 1):
+            success, latency_ms, error, timestamp = tcping(target, port, timeout_seconds)
+            if success:
+                return ScanResult(
+                    input_target=target,
+                    resolved_host=target,
+                    port=port,
+                    success=True,
+                    latency_ms=latency_ms,
+                    error=None,
+                    timestamp_utc=timestamp,
+                )
+            last_error = error
+            last_timestamp = timestamp
+            if attempt < retries:
+                continue
+
         return ScanResult(
             input_target=target,
             resolved_host=target,
             port=port,
-            success=success,
-            latency_ms=latency_ms,
-            error=error,
-            timestamp_utc=timestamp,
+            success=False,
+            latency_ms=None,
+            error=last_error,
+            timestamp_utc=last_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -303,31 +346,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     color_enabled = (not args.no_color) and sys.stdout.isatty()
     logger = Logger(use_color=color_enabled)
 
-    if args.timeout <= 0:
-        logger.error("--timeout must be > 0")
+    if args.timeout_ms <= 0:
+        logger.error("--timeout-ms must be > 0")
         return 2
     if args.workers < 0:
         logger.error("--workers must be >= 0")
         return 2
+    if args.retries < 0:
+        logger.error("--retries must be >= 0")
+        return 2
 
     try:
         ports = parse_ports(args.ports)
-        targets = parse_targets(args.targets, args.target_file, logger)
+        targets = parse_targets(args.targets, args.target_list_file, logger)
     except (ValueError, FileNotFoundError) as exc:
         logger.error(str(exc))
-        return 2
-
-    if not targets:
-        logger.error("No targets provided. Use --targets and/or --target-file.")
         return 2
 
     total_checks = len(targets) * len(ports)
     workers = choose_workers(total_checks=total_checks, requested_workers=args.workers)
     logger.info(
-        f"Starting TCPing scan: {len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout}s, workers={workers}"
+        "Starting TCPing scan: "
+        f"{len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout_ms}ms, "
+        f"retries={args.retries}, workers={workers}"
     )
 
-    results = run_scan(targets=targets, ports=ports, timeout=args.timeout, workers=workers, logger=logger)
+    results = run_scan(
+        targets=targets,
+        ports=ports,
+        timeout_ms=args.timeout_ms,
+        retries=args.retries,
+        workers=workers,
+        logger=logger,
+    )
 
     total = len(results)
     success_count = sum(1 for r in results if r.success)
