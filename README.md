@@ -22,6 +22,7 @@ It checks pure TCP connect latency (no HTTP/ICMP), and supports:
   - Comma list: `80,443,8443`
   - Range: `1-1024`
 - **Configurable timeout** with `--timeout`.
+- **High-speed concurrent testing** (auto worker tuning, configurable with `--workers`).
 - **Colored log output** (auto-enabled on TTY; disable with `--no-color`).
 - **Save successful results** only to:
   - `.txt`
@@ -55,6 +56,12 @@ Test mixed targets and ports with custom timeout:
 
 ```bash
 python tcping_scanner.py --targets google.com,1.1.1.1,192.168.1.0/30 --ports 80,443 --timeout 1.5
+```
+
+Run a very fast burst test (similar to v2rayNG behavior) by increasing worker count:
+
+```bash
+python tcping_scanner.py --target-file targets.txt --ports 443 --timeout 1 --workers 150
 ```
 
 Use a target file:
@@ -103,6 +110,8 @@ During scan, each check prints a line showing:
 - tested endpoint (`host:port`)
 - `latency` if success
 - `error` if failed
+
+Checks are executed concurrently, so results appear quickly as each worker completes.
 
 At the end, it prints summary with:
 - total checks
