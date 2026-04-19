@@ -10,10 +10,11 @@ import json
 import socket
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 
 @dataclass
@@ -222,6 +223,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="TCP connection timeout in seconds (default: 2.0)",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help=(
+            "Number of concurrent workers. Default (0) auto-tunes based on workload "
+            "for faster v2rayNG-style burst testing."
+        ),
+    )
+    parser.add_argument(
         "--save-success",
         help="Output file for successful results (.txt, .json, .csv).",
     )
@@ -241,6 +251,51 @@ def print_result(result: ScanResult, logger: Logger) -> None:
         logger.error(f"{endpoint}  error={result.error}")
 
 
+def choose_workers(total_checks: int, requested_workers: int) -> int:
+    if requested_workers > 0:
+        return requested_workers
+
+    # TCPing is network-bound; allow high parallelism by default so results appear quickly.
+    return max(1, min(200, total_checks))
+
+
+def run_scan(
+    targets: Sequence[str],
+    ports: Sequence[int],
+    timeout: float,
+    workers: int,
+    logger: Logger,
+) -> list[ScanResult]:
+    indexed_checks = [
+        (target, port, index) for index, (target, port) in enumerate((t, p) for t in targets for p in ports)
+    ]
+    results_by_index: dict[int, ScanResult] = {}
+
+    def run_one(target: str, port: int) -> ScanResult:
+        success, latency_ms, error, timestamp = tcping(target, port, timeout)
+        return ScanResult(
+            input_target=target,
+            resolved_host=target,
+            port=port,
+            success=success,
+            latency_ms=latency_ms,
+            error=error,
+            timestamp_utc=timestamp,
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map: dict[Future[ScanResult], int] = {
+            executor.submit(run_one, target, port): index for target, port, index in indexed_checks
+        }
+        for future in as_completed(future_map):
+            index = future_map[future]
+            row = future.result()
+            results_by_index[index] = row
+            print_result(row, logger)
+
+    return [results_by_index[i] for i in range(len(indexed_checks))]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -250,6 +305,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.timeout <= 0:
         logger.error("--timeout must be > 0")
+        return 2
+    if args.workers < 0:
+        logger.error("--workers must be >= 0")
         return 2
 
     try:
@@ -263,24 +321,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("No targets provided. Use --targets and/or --target-file.")
         return 2
 
-    logger.info(f"Starting TCPing scan: {len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout}s")
+    total_checks = len(targets) * len(ports)
+    workers = choose_workers(total_checks=total_checks, requested_workers=args.workers)
+    logger.info(
+        f"Starting TCPing scan: {len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout}s, workers={workers}"
+    )
 
-    results: list[ScanResult] = []
-
-    for target in targets:
-        for port in ports:
-            success, latency_ms, error, timestamp = tcping(target, port, args.timeout)
-            row = ScanResult(
-                input_target=target,
-                resolved_host=target,
-                port=port,
-                success=success,
-                latency_ms=latency_ms,
-                error=error,
-                timestamp_utc=timestamp,
-            )
-            results.append(row)
-            print_result(row, logger)
+    results = run_scan(targets=targets, ports=ports, timeout=args.timeout, workers=workers, logger=logger)
 
     total = len(results)
     success_count = sum(1 for r in results if r.success)
