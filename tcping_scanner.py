@@ -172,39 +172,32 @@ def save_successful(results: Sequence[ScanResult], out_path: str, logger: Logger
     success_rows = [r for r in results if r.success]
 
     if path.suffix.lower() == ".json":
-        payload = [r.__dict__ for r in success_rows]
+        payload = [
+            {
+                "ip": row.resolved_host,
+                "speed_ms": round(row.latency_ms or 0.0, 2),
+            }
+            for row in success_rows
+        ]
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     elif path.suffix.lower() == ".csv":
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=[
-                    "input_target",
-                    "resolved_host",
-                    "port",
-                    "success",
-                    "latency_ms",
-                    "timestamp_utc",
-                ],
+                fieldnames=["ip", "speed_ms"],
             )
             writer.writeheader()
             for row in success_rows:
                 writer.writerow(
                     {
-                        "input_target": row.input_target,
-                        "resolved_host": row.resolved_host,
-                        "port": row.port,
-                        "success": row.success,
-                        "latency_ms": f"{row.latency_ms:.2f}" if row.latency_ms is not None else "",
-                        "timestamp_utc": row.timestamp_utc,
+                        "ip": row.resolved_host,
+                        "speed_ms": f"{row.latency_ms:.2f}" if row.latency_ms is not None else "",
                     }
                 )
     else:
         lines = []
         for row in success_rows:
-            lines.append(
-                f"{row.input_target} ({row.resolved_host}):{row.port} {row.latency_ms:.2f} ms @ {row.timestamp_utc}"
-            )
+            lines.append(f"{row.resolved_host} {row.latency_ms:.2f}ms")
         path.write_text("\n".join(lines), encoding="utf-8")
 
     logger.ok(f"Saved {len(success_rows)} successful result(s) to {path}")
