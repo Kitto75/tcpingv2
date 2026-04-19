@@ -1,107 +1,112 @@
-# tcpingv2
+# tcpingv2 (simple)
 
-Simple TCP connect latency scanner inspired by the TCPing experience in v2rayNG.
+This checks **TCP connect time** only (not ICMP ping, not HTTP response body).
 
-It measures **TCP connect time only** (not ICMP ping, not HTTP response time).
+---
 
-## Quick start (simplest ways)
+## 1) Fast start
 
-Run with built-in defaults:
-
-```bash
-python tcping_scanner.py --ports 443
-```
-
-Run explicit targets:
+Use default test hosts:
 
 ```bash
-python tcping_scanner.py --targets google.com cloudflare.com 1.1.1.1 --ports 443
+python tcping_scanner.py -p 443
 ```
 
-Run from a target file:
+Use your own hosts:
 
 ```bash
-python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443
+python tcping_scanner.py -t google.com cloudflare.com 1.1.1.1 -p 443
 ```
 
-## What it supports
-
-- Domains, IPs, and CIDR subnets.
-- Port input as single (`443`), list (`80,443`), or range (`1-1024`).
-- Timeout in milliseconds (`--timeout-ms`).
-- Retries (`--retries`).
-- Concurrent workers (`--workers`).
-- Save successful results only (`--save-success`) to `.txt`, `.json`, `.csv`.
-- Optional random test order (`--random-order`).
-
-## Ordered by default (not random)
-
-Default behavior is deterministic and follows your input order.
-
-- If you want random execution order, add:
+Use a file:
 
 ```bash
-python tcping_scanner.py --targets google.com cloudflare.com --ports 443 --random-order
+python tcping_scanner.py -f cidr_or_domains_targets.txt -p 443
 ```
 
-## v2rayNG-style inner test sample addresses
+---
 
-If you want sample connectivity test URLs often used in proxy apps (including v2ray ecosystem testing), these are common examples:
+## 2) Live output (now)
 
-- `http://www.gstatic.com/generate_204`
-- `https://www.gstatic.com/generate_204`
-- `http://connectivitycheck.gstatic.com/generate_204`
+When running, you now see:
 
-> Note: this tool is TCP-only, so it tests host:port connectivity (for example `www.gstatic.com:80` or `www.gstatic.com:443`), not URL path response content.
+- each result as soon as it finishes
+- a moving spinner (◐ ◓ ◑ ◒)
+- live progress (`done/total`)
+- estimated remaining time (`eta`)
 
-## Target file format (`cidr_or_domains_targets.txt`)
+So you can see that the script is active and not frozen.
 
-One target per line. Empty lines and lines starting with `#` are ignored.
+---
 
-```txt
-# Domains
-google.com
-cloudflare.com
+## 3) Short options (easy)
 
-# IPs
-1.1.1.1
-8.8.8.8
+| Short | Long | Meaning |
+|---|---|---|
+| `-t` | `--targets` | hosts/subnets in command |
+| `-f` | `--target-list-file` | file with targets |
+| `-p` | `--ports` | ports (required) |
+| `-T` | `--timeout-ms` | timeout in milliseconds |
+| `-r` | `--retries` | retry count |
+| `-w` | `--workers` | parallel workers |
+| `-o` | `--save-success` | save successful checks |
+| `-R` | `--random-order` | randomize check order |
+| `-C` | `--no-color` | disable colors |
 
-# CIDR
-192.168.1.0/30
-```
+---
 
-## Useful examples
+## 4) Most useful examples
 
-Custom timeout and retries:
+Timeout + retries:
 
 ```bash
-python tcping_scanner.py --targets google.com 1.1.1.1 --ports 443 --timeout-ms 1200 --retries 2
+python tcping_scanner.py -t google.com -p 443 -T 1200 -r 2
 ```
 
 Multiple ports:
 
 ```bash
-python tcping_scanner.py --targets google.com --ports 80,443,8443
+python tcping_scanner.py -t google.com -p 80,443,8443
+```
+
+CIDR:
+
+```bash
+python tcping_scanner.py -t 192.168.1.0/30 -p 443
 ```
 
 Save successes:
 
 ```bash
-python tcping_scanner.py --target-list-file cidr_or_domains_targets.txt --ports 443 --save-success success.json
+python tcping_scanner.py -f cidr_or_domains_targets.txt -p 443 -o success.json
 ```
 
-Disable colored output:
+---
 
-```bash
-python tcping_scanner.py --targets google.com --ports 443 --no-color
+## 5) Target file format
+
+One target per line:
+
+```txt
+# domain
+google.com
+
+# ip
+1.1.1.1
+
+# cidr
+192.168.1.0/30
 ```
 
-## Exit codes
+---
 
-- `0`: at least one successful TCP connection.
-- `1`: scan finished but no successful connections.
-- `2`: invalid arguments/input errors.
+## 6) Exit codes
+
+- `0` = at least one success
+- `1` = finished but no success
+- `2` = bad input/arguments
+
+---
 
 ## Help
 
