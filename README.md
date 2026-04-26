@@ -50,6 +50,7 @@ So you can see that the script is active and not frozen.
 | `-r` | `--retries` | retry count |
 | `-w` | `--workers` | parallel workers |
 | `-o` | `--save-success` | save successful checks |
+|  | `--retry-report-file` | retry summary output path |
 | `-R` | `--random-order` | randomize check order |
 | `-C` | `--no-color` | disable colors |
 
@@ -61,6 +62,19 @@ Timeout + retries:
 
 ```bash
 python tcping_scanner.py -t google.com -p 443 -T 1200 -r 2
+```
+
+When `-r` / `--retries` is greater than `0`, the scanner now writes a JSON summary file (`retry_summary.json` by default) with:
+
+- total completed checks
+- number of successful checks
+- number of failed checks
+- success rate percentage
+
+Use a custom path:
+
+```bash
+python tcping_scanner.py -t google.com -p 443 -r 2 --retry-report-file reports/retry_summary.json
 ```
 
 Multiple ports:
