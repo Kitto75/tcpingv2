@@ -203,6 +203,34 @@ def save_successful(results: Sequence[ScanResult], out_path: str, logger: Logger
     logger.ok(f"Saved {len(success_rows)} successful result(s) to {path}")
 
 
+def save_retry_summary(
+    results: Sequence[ScanResult],
+    retries: int,
+    planned_total: int,
+    out_path: str,
+    logger: Logger,
+) -> None:
+    """Save a small summary report when retry mode is enabled."""
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    total = len(results)
+    success_count = sum(1 for row in results if row.success)
+    failure_count = total - success_count
+    success_rate = (success_count / total * 100.0) if total else 0.0
+
+    payload = {
+        "retries_configured": retries,
+        "planned_checks": planned_total,
+        "completed_checks": total,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "success_rate_percent": round(success_rate, 2),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.ok(f"Saved retry summary to {path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tcping_scanner.py",
@@ -268,6 +296,14 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--save-success",
         help="Output file for successful results (.txt, .json, .csv).",
+    )
+    parser.add_argument(
+        "--retry-report-file",
+        default="retry_summary.json",
+        help=(
+            "Output file for retry summary when --retries is used "
+            "(default: retry_summary.json)."
+        ),
     )
     parser.add_argument(
         "-R",
@@ -461,6 +497,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.save_success:
         save_successful(results, args.save_success, logger)
+    if args.retries > 0:
+        save_retry_summary(
+            results=results,
+            retries=args.retries,
+            planned_total=total_checks,
+            out_path=args.retry_report_file,
+            logger=logger,
+        )
 
     if interrupted:
         return 130 if success_count == 0 else 0
