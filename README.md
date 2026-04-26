@@ -70,6 +70,10 @@ When `-r` / `--retries` is greater than `0`, the scanner now writes a JSON summa
 - number of successful checks
 - number of failed checks
 - success rate percentage
+- per-IP retry score (successful tests vs total tests)
+- per-IP successful speeds (`successful_speeds_ms`)
+
+Only IPs/targets with at least 1 successful attempt are included in `ip_results` (full-failure IPs are excluded).
 
 Use a custom path:
 
