@@ -255,8 +255,6 @@ def save_retry_summary(
         row = per_ip[ip]
         total_tests = int(row["total_tests"])
         successful_tests = int(row["successful_tests"])
-        if successful_tests < 1:
-            continue
         row["score_percent"] = round((successful_tests / total_tests) * 100.0, 2) if total_tests else 0.0
         ip_results.append(row)
 
@@ -322,7 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--retries",
         type=int,
         default=0,
-        help="Retry attempts per target/port after the first failed attempt (default: 0).",
+        help=(
+            "How many times each target/port should be tested. "
+            "Example: -r 5 runs 5 checks per target/port (default: 0 => 1 check)."
+        ),
     )
     parser.add_argument(
         "-w",
@@ -382,12 +383,17 @@ def run_scan(
     targets: Sequence[str],
     ports: Sequence[int],
     timeout_ms: int,
-    retries: int,
+    attempts_per_target: int,
     workers: int,
     random_order: bool,
     logger: Logger,
 ) -> tuple[list[ScanResult], bool, list[RetryAttempt]]:
-    indexed_checks = [(target, port) for target in targets for port in ports]
+    indexed_checks = [
+        (target, port, attempt_number)
+        for target in targets
+        for port in ports
+        for attempt_number in range(1, attempts_per_target + 1)
+    ]
     if random_order:
         random.shuffle(indexed_checks)
     total_checks = len(indexed_checks)
@@ -397,60 +403,38 @@ def run_scan(
 
     attempt_results: list[RetryAttempt] = []
 
-    def run_one(target: str, port: int) -> tuple[ScanResult, list[RetryAttempt]]:
+    def run_one(target: str, port: int, attempt_number: int) -> tuple[ScanResult, list[RetryAttempt]]:
         timeout_seconds = timeout_ms / 1000.0
-        last_error: str | None = None
-        last_timestamp: str | None = None
-        local_attempts: list[RetryAttempt] = []
-
-        for attempt in range(retries + 1):
-            success, latency_ms, error, timestamp = tcping(target, port, timeout_seconds)
-            local_attempts.append(
-                RetryAttempt(
-                    ip=target,
-                    port=port,
-                    attempt_number=attempt + 1,
-                    success=success,
-                    latency_ms=latency_ms,
-                    error=error,
-                    timestamp_utc=timestamp,
-                )
+        success, latency_ms, error, timestamp = tcping(target, port, timeout_seconds)
+        local_attempts = [
+            RetryAttempt(
+                ip=target,
+                port=port,
+                attempt_number=attempt_number,
+                success=success,
+                latency_ms=latency_ms,
+                error=error,
+                timestamp_utc=timestamp,
             )
-            if success:
-                return (
-                    ScanResult(
-                        input_target=target,
-                        resolved_host=target,
-                        port=port,
-                        success=True,
-                        latency_ms=latency_ms,
-                        error=None,
-                        timestamp_utc=timestamp,
-                    ),
-                    local_attempts,
-                )
-            last_error = error
-            last_timestamp = timestamp
-            if attempt < retries:
-                continue
-
+        ]
         return (
             ScanResult(
                 input_target=target,
                 resolved_host=target,
                 port=port,
-                success=False,
-                latency_ms=None,
-                error=last_error,
-                timestamp_utc=last_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                success=success,
+                latency_ms=latency_ms,
+                error=error,
+                timestamp_utc=timestamp,
             ),
             local_attempts,
         )
 
     interrupted = False
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map: dict[Future[tuple[ScanResult, list[RetryAttempt]]], tuple[str, int]] = {
-            executor.submit(run_one, target, port): (target, port) for target, port in indexed_checks
+        future_map: dict[Future[tuple[ScanResult, list[RetryAttempt]]], tuple[str, int, int]] = {
+            executor.submit(run_one, target, port, attempt_number): (target, port, attempt_number)
+            for target, port, attempt_number in indexed_checks
         }
         done_count = 0
         processed_futures: set[Future[tuple[ScanResult, list[RetryAttempt]]]] = set()
@@ -515,19 +499,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error(str(exc))
         return 2
 
-    total_checks = len(targets) * len(ports)
+    attempts_per_target = args.retries if args.retries > 0 else 1
+    total_checks = len(targets) * len(ports) * attempts_per_target
     workers = choose_workers(total_checks=total_checks, requested_workers=args.workers)
     logger.info(
         "Starting TCPing scan: "
         f"{len(targets)} target(s), {len(ports)} port(s), timeout={args.timeout_ms}ms, "
-        f"retries={args.retries}, workers={workers}, random_order={args.random_order}"
+        f"attempts_per_target={attempts_per_target}, workers={workers}, random_order={args.random_order}"
     )
 
     results, interrupted, attempt_results = run_scan(
         targets=targets,
         ports=ports,
         timeout_ms=args.timeout_ms,
-        retries=args.retries,
+        attempts_per_target=attempts_per_target,
         workers=workers,
         random_order=args.random_order,
         logger=logger,
@@ -565,7 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_retry_summary(
             results=results,
             attempts=attempt_results,
-            retries=args.retries,
+            retries=attempts_per_target,
             planned_total=total_checks,
             out_path=args.retry_report_file,
             logger=logger,
