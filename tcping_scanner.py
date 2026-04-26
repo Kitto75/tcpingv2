@@ -29,6 +29,17 @@ class ScanResult:
     timestamp_utc: str
 
 
+@dataclass
+class RetryAttempt:
+    ip: str
+    port: int
+    attempt_number: int
+    success: bool
+    latency_ms: float | None
+    error: str | None
+    timestamp_utc: str
+
+
 class Colors:
     RESET = "\033[0m"
     DIM = "\033[2m"
@@ -205,6 +216,7 @@ def save_successful(results: Sequence[ScanResult], out_path: str, logger: Logger
 
 def save_retry_summary(
     results: Sequence[ScanResult],
+    attempts: Sequence[RetryAttempt],
     retries: int,
     planned_total: int,
     out_path: str,
@@ -219,6 +231,35 @@ def save_retry_summary(
     failure_count = total - success_count
     success_rate = (success_count / total * 100.0) if total else 0.0
 
+    per_ip: dict[str, dict[str, object]] = {}
+    for attempt in attempts:
+        row = per_ip.setdefault(
+            attempt.ip,
+            {
+                "ip": attempt.ip,
+                "total_tests": 0,
+                "successful_tests": 0,
+                "score_percent": 0.0,
+                "successful_speeds_ms": [],
+            },
+        )
+        row["total_tests"] = int(row["total_tests"]) + 1
+        if attempt.success:
+            row["successful_tests"] = int(row["successful_tests"]) + 1
+            cast_speeds = row["successful_speeds_ms"]
+            if isinstance(cast_speeds, list):
+                cast_speeds.append(round(attempt.latency_ms or 0.0, 2))
+
+    ip_results = []
+    for ip in sorted(per_ip):
+        row = per_ip[ip]
+        total_tests = int(row["total_tests"])
+        successful_tests = int(row["successful_tests"])
+        if successful_tests < 1:
+            continue
+        row["score_percent"] = round((successful_tests / total_tests) * 100.0, 2) if total_tests else 0.0
+        ip_results.append(row)
+
     payload = {
         "retries_configured": retries,
         "planned_checks": planned_total,
@@ -226,6 +267,7 @@ def save_retry_summary(
         "success_count": success_count,
         "failure_count": failure_count,
         "success_rate_percent": round(success_rate, 2),
+        "ip_results": ip_results,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.ok(f"Saved retry summary to {path}")
@@ -344,7 +386,7 @@ def run_scan(
     workers: int,
     random_order: bool,
     logger: Logger,
-) -> tuple[list[ScanResult], bool]:
+) -> tuple[list[ScanResult], bool, list[RetryAttempt]]:
     indexed_checks = [(target, port) for target in targets for port in ports]
     if random_order:
         random.shuffle(indexed_checks)
@@ -353,50 +395,71 @@ def run_scan(
     start_time = time.perf_counter()
     spinner_chars = ["◐", "◓", "◑", "◒"]
 
-    def run_one(target: str, port: int) -> ScanResult:
+    attempt_results: list[RetryAttempt] = []
+
+    def run_one(target: str, port: int) -> tuple[ScanResult, list[RetryAttempt]]:
         timeout_seconds = timeout_ms / 1000.0
         last_error: str | None = None
         last_timestamp: str | None = None
+        local_attempts: list[RetryAttempt] = []
 
         for attempt in range(retries + 1):
             success, latency_ms, error, timestamp = tcping(target, port, timeout_seconds)
-            if success:
-                return ScanResult(
-                    input_target=target,
-                    resolved_host=target,
+            local_attempts.append(
+                RetryAttempt(
+                    ip=target,
                     port=port,
-                    success=True,
+                    attempt_number=attempt + 1,
+                    success=success,
                     latency_ms=latency_ms,
-                    error=None,
+                    error=error,
                     timestamp_utc=timestamp,
+                )
+            )
+            if success:
+                return (
+                    ScanResult(
+                        input_target=target,
+                        resolved_host=target,
+                        port=port,
+                        success=True,
+                        latency_ms=latency_ms,
+                        error=None,
+                        timestamp_utc=timestamp,
+                    ),
+                    local_attempts,
                 )
             last_error = error
             last_timestamp = timestamp
             if attempt < retries:
                 continue
 
-        return ScanResult(
-            input_target=target,
-            resolved_host=target,
-            port=port,
-            success=False,
-            latency_ms=None,
-            error=last_error,
-            timestamp_utc=last_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        return (
+            ScanResult(
+                input_target=target,
+                resolved_host=target,
+                port=port,
+                success=False,
+                latency_ms=None,
+                error=last_error,
+                timestamp_utc=last_timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+            local_attempts,
         )
 
     interrupted = False
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map: dict[Future[ScanResult], tuple[str, int]] = {
+        future_map: dict[Future[tuple[ScanResult, list[RetryAttempt]]], tuple[str, int]] = {
             executor.submit(run_one, target, port): (target, port) for target, port in indexed_checks
         }
         done_count = 0
-        processed_futures: set[Future[ScanResult]] = set()
+        processed_futures: set[Future[tuple[ScanResult, list[RetryAttempt]]]] = set()
         try:
             for future in as_completed(future_map):
-                row = future.result()
+                row, row_attempts = future.result()
                 done_count += 1
                 results.append(row)
+                attempt_results.extend(row_attempts)
                 processed_futures.add(future)
                 print_result(row, logger)
 
@@ -418,13 +481,14 @@ def run_scan(
                 if future in processed_futures or not future.done() or future.cancelled():
                     continue
                 try:
-                    row = future.result()
+                    scan_row, row_attempts = future.result()
+                    results.append(scan_row)
+                    attempt_results.extend(row_attempts)
                 except Exception:
                     continue
-                results.append(row)
         finally:
             logger.progress_done()
-    return results, interrupted
+    return results, interrupted, attempt_results
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -459,7 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"retries={args.retries}, workers={workers}, random_order={args.random_order}"
     )
 
-    results, interrupted = run_scan(
+    results, interrupted, attempt_results = run_scan(
         targets=targets,
         ports=ports,
         timeout_ms=args.timeout_ms,
@@ -500,6 +564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.retries > 0:
         save_retry_summary(
             results=results,
+            attempts=attempt_results,
             retries=args.retries,
             planned_total=total_checks,
             out_path=args.retry_report_file,
