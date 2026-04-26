@@ -47,7 +47,7 @@ So you can see that the script is active and not frozen.
 | `-f` | `--target-list-file` | file with targets |
 | `-p` | `--ports` | ports (required) |
 | `-T` | `--timeout-ms` | timeout in milliseconds |
-| `-r` | `--retries` | retry count |
+| `-r` | `--retries` | checks per target/port (`-r 5` = 5 tests each) |
 | `-w` | `--workers` | parallel workers |
 | `-o` | `--save-success` | save successful checks |
 |  | `--retry-report-file` | retry summary output path |
@@ -58,22 +58,20 @@ So you can see that the script is active and not frozen.
 
 ## 4) Most useful examples
 
-Timeout + retries:
+Timeout + repeated checks:
 
 ```bash
 python tcping_scanner.py -t google.com -p 443 -T 1200 -r 2
 ```
 
-When `-r` / `--retries` is greater than `0`, the scanner now writes a JSON summary file (`retry_summary.json` by default) with:
+When `-r` / `--retries` is greater than `0`, each target/port is tested exactly `r` times and the scanner writes a JSON summary file (`retry_summary.json` by default) with:
 
 - total completed checks
 - number of successful checks
 - number of failed checks
 - success rate percentage
-- per-IP retry score (successful tests vs total tests)
+- per-IP score (successful tests vs total tests)
 - per-IP successful speeds (`successful_speeds_ms`)
-
-Only IPs/targets with at least 1 successful attempt are included in `ip_results` (full-failure IPs are excluded).
 
 Use a custom path:
 
